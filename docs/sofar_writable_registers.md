@@ -569,6 +569,11 @@ Bu bloklarda **tek register yazma CALISMAZ**. Tum shadow register'lar + enable r
 - Enable deger: her zaman `0x0001` (batarya icin `0x0002` = varsayilana don)
 - Enable okuma sonucu: `0x0000` = basarili, `0x0001` = islemde, `0xFFFx` = hata
 
+**⚠️ KRITIK: Schedule Blok Kilitleme Davranisi**
+- **Zamanli Sarj (0x1111-0x111F):** Enerji depolama modu 1 (Time-sharing) veya 2 (Timed Charge) aktifken YAZMA REDDEDILIR (Exception 0x03). Yazabilmek icin once `writem 1110 0000` ile mod 0'a (Self-generation) gecilmeli, yazma yapilmali, sonra istenilen moda geri donulmeli.
+- **Time-Sharing (0x1120-0x112F):** Mod 1 aktifken bile yazilabiliyor — kilitleme YOK.
+- **Sonuc:** `tadd` komutu otomatik mod gecisi yapar (mod 0 → yaz → mod 2'ye don).
+
 **Enable blok yazma ornekleri:**
 ```bash
 # Tarih/Saat (7 register): 2026-03-10 15:30:00
@@ -776,6 +781,26 @@ readn 0404 2
 
 **Yorum:** Gece 01:00-05:00 arasi zorla sarj kurali tanimli ama DEVRE DISI.
 
+### Schedule Test Sonuclari (2026-03-12)
+
+**Time-Sharing (sadd) — BASARILI:**
+```bash
+smode 1                              # Time-sharing moduna gec
+sadd 0 0 1600 0600 100 2500          # Kural 0: 22:00-06:00 Zorla Sarj %100 2500W — BASARILI
+sadd 1 1 1100 1600 20 3000           # Kural 1: 17:00-22:00 Zorla Desarj %20 3000W — BASARILI
+```
+- Her iki kural da enable=0x0000 (basarili) dondu
+- Mod 1 aktifken Time-Sharing blogu yazilabiliyor
+
+**Timed Charge (tadd) — MOD KILIDI KESFEDILDI:**
+```bash
+smode 2 → tadd → Exception 0x03    # Mod 2'de KILITLENIYOR
+smode 1 → tadd → Exception 0x03    # Mod 1'de KILITLENIYOR
+smode 0 → writem 1111 ... → OK     # Mod 0'da CALISIYOR
+```
+- **Cozum:** Yazma oncesi mod 0'a gec, yaz, modu geri yukle
+- Firmware'deki `tadd` komutu bu gecisi otomatik yapar
+
 ---
 
 ## YAZMA KURALLARI OZETI (TAMAMLANDI)
@@ -801,6 +826,7 @@ readn 0404 2
 - **0x100B-0x100F** degistirmek RS485 iletisimi bozabilir (baud, slave ID)
 - **0x0800-0x0A09** safety params — FC 0x10 zaten reddediliyor (0x01), ama denemeyin
 - **0x1044-0x1053** batarya param — yanlis deger batarya hasarina yol acabilir
+- **0x1111-0x111F** Zamanli Sarj blogu — aktif schedule modundayken (mod 1/2) kilitleniyor, once mod 0'a gec
 
 ### Exception Kodlari Anlamlari
 | Exception | Ne Yapilmali |

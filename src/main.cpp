@@ -31,6 +31,15 @@ void printHelp() {
     DEBUG_SERIAL.println("  scan         - Slave ID tara (1-247)");
     DEBUG_SERIAL.println("  auto         - Otomatik okuma ac/kapat");
     DEBUG_SERIAL.println("  slave N      - Slave ID degistir (orn: slave 1)");
+    DEBUG_SERIAL.println("  --- SCHEDULE KOMUTLARI ---");
+    DEBUG_SERIAL.println("  slist        - Tum schedule kurallarini goster");
+    DEBUG_SERIAL.println("  smode N      - Enerji depolama modu (0-6)");
+    DEBUG_SERIAL.println("  sadd I M HHMM HHMM SOC WATT - Time-sharing kural ekle");
+    DEBUG_SERIAL.println("                 I=index(0-255) M=mod(0-6) SOC=%(10-100)");
+    DEBUG_SERIAL.println("  sdel I       - Time-sharing kurali devre disi birak");
+    DEBUG_SERIAL.println("  tadd I HHMM HHMM HHMM HHMM CW DW - Zamanli sarj kural ekle");
+    DEBUG_SERIAL.println("                 I=index(0-3) sarjBas sarjBit desarjBas desarjBit CW=sarjW DW=desarjW");
+    DEBUG_SERIAL.println("  tdel I       - Zamanli sarj kurali devre disi birak");
     DEBUG_SERIAL.println("  help         - Bu menuyu goster");
     DEBUG_SERIAL.println("=======================================================\n");
 }
@@ -196,6 +205,419 @@ void cmdWriteMultipleRegisters(const char* input) {
     }
 }
 
+// --- Enerji Depolama Modu Isimleri ---
+
+const char* getEnergyModeName(uint16_t mode) {
+    switch (mode) {
+        case 0: return "Self-generation (Kendi uretim)";
+        case 1: return "Time-sharing tariff (Zaman dilimli)";
+        case 2: return "Timed charge/discharge (Zamanli sarj)";
+        case 3: return "Passive";
+        case 4: return "Peak-shaving (Tepe tiras)";
+        case 5: return "Off-grid (Sebekeden bagimsiz)";
+        case 6: return "Generator";
+        default: return "Bilinmeyen";
+    }
+}
+
+const char* getTimeSharingModeName(uint16_t mode) {
+    switch (mode) {
+        case 0: return "Zorla sarj";
+        case 1: return "Zorla desarj";
+        case 2: return "Peak-shaving";
+        case 3: return "Besleme onceligi";
+        case 4: return "Spontan kendi kullanim";
+        case 5: return "Sarj bakim";
+        case 6: return "Desarj bakim";
+        default: return "Bilinmeyen";
+    }
+}
+
+// --- Schedule Listele ---
+
+void cmdScheduleList() {
+    uint16_t mode;
+    DEBUG_SERIAL.println("\n========== SCHEDULE DURUMU ==========");
+
+    // Enerji depolama modu
+    if (inverter.readRegister(0x1110, mode)) {
+        DEBUG_SERIAL.printf("[MOD] Enerji depolama modu: %d - %s\n", mode, getEnergyModeName(mode));
+    } else {
+        DEBUG_SERIAL.println("[HATA] Mod okunamadi!");
+    }
+
+    // Time-Sharing kurallari (4 kural kontrol et)
+    DEBUG_SERIAL.println("\n--- TIME-SHARING KURALLARI ---");
+    uint16_t tsRegs[16];
+    bool anyTsFound = false;
+
+    for (int rule = 0; rule < 4; rule++) {
+        // Her kural icin shadow registerlere yaz ve oku
+        // Once shadow'a kural index'i yazalim ve okuyalim
+        uint16_t writeRegs[16] = {};
+        writeRegs[0] = rule;  // kural index
+        writeRegs[15] = 0x0001;  // enable read
+
+        // Kural okumak icin: once index yazalim, sonra okuyalim
+        // Aslinda readn ile mevcut durumu okuyabiliriz
+        if (inverter.readRegisters(0x1120, 16, tsRegs)) {
+            // Sadece ilk okumada mevcut kurali gosteriyoruz
+            if (rule == 0) {
+                uint16_t idx = tsRegs[0];
+                uint16_t en = tsRegs[1];
+                uint16_t startH = tsRegs[2] >> 8, startM = tsRegs[2] & 0xFF;
+                uint16_t endH = tsRegs[3] >> 8, endM = tsRegs[3] & 0xFF;
+                uint16_t soc = tsRegs[4];
+                uint32_t power = ((uint32_t)tsRegs[5] << 16) | tsRegs[6];
+                uint16_t dateStart = tsRegs[7];
+                uint16_t dateEnd = tsRegs[8];
+                uint16_t days = tsRegs[9];
+                uint16_t ctrlMode = tsRegs[10];
+                uint16_t extraCfg = tsRegs[11];
+                uint16_t soc2 = tsRegs[12];
+
+                DEBUG_SERIAL.printf("  Kural %d: %s\n", idx, en ? "AKTIF" : "DEVRE DISI");
+                DEBUG_SERIAL.printf("    Zaman : %02d:%02d - %02d:%02d\n", startH, startM, endH, endM);
+                DEBUG_SERIAL.printf("    Mod   : %d (%s)\n", ctrlMode, getTimeSharingModeName(ctrlMode));
+                DEBUG_SERIAL.printf("    SOC   : %%%d  Guc: %luW\n", soc, power);
+                DEBUG_SERIAL.printf("    Tarih : %02d/%02d - %02d/%02d\n",
+                    dateStart >> 8, dateStart & 0xFF, dateEnd >> 8, dateEnd & 0xFF);
+
+                // Gunleri goster
+                DEBUG_SERIAL.print("    Gunler: ");
+                const char* dayNames[] = {"Pzt", "Sal", "Car", "Per", "Cum", "Cmt", "Paz"};
+                for (int d = 0; d < 7; d++) {
+                    if (days & (1 << d)) {
+                        DEBUG_SERIAL.printf("%s ", dayNames[d]);
+                    }
+                }
+                DEBUG_SERIAL.println();
+
+                if (extraCfg) DEBUG_SERIAL.printf("    Ek cfg: 0x%04X\n", extraCfg);
+                if (soc2) DEBUG_SERIAL.printf("    SOC2  : %%%d\n", soc2);
+                DEBUG_SERIAL.printf("    Enable: 0x%04X\n", tsRegs[15]);
+                anyTsFound = true;
+            }
+            break;
+        } else {
+            DEBUG_SERIAL.println("[HATA] Time-sharing registerleri okunamadi!");
+            break;
+        }
+    }
+
+    if (!anyTsFound) {
+        DEBUG_SERIAL.println("  (Kural bulunamadi veya okunamadi)");
+    }
+
+    // Zamanli Sarj/Desarj kurallari
+    DEBUG_SERIAL.println("\n--- ZAMANLI SARJ/DESARJ KURALLARI ---");
+    uint16_t tcRegs[15];
+    if (inverter.readRegisters(0x1111, 15, tcRegs)) {
+        uint16_t idx = tcRegs[0];
+        uint16_t en = tcRegs[1];
+        uint16_t chStartH = tcRegs[2] >> 8, chStartM = tcRegs[2] & 0xFF;
+        uint16_t chEndH = tcRegs[3] >> 8, chEndM = tcRegs[3] & 0xFF;
+        uint16_t dcStartH = tcRegs[4] >> 8, dcStartM = tcRegs[4] & 0xFF;
+        uint16_t dcEndH = tcRegs[5] >> 8, dcEndM = tcRegs[5] & 0xFF;
+        uint32_t chPower = ((uint32_t)tcRegs[6] << 16) | tcRegs[7];
+        uint32_t dcPower = ((uint32_t)tcRegs[8] << 16) | tcRegs[9];
+
+        DEBUG_SERIAL.printf("  Kural %d: Enable=0x%04X", idx, en);
+        if (en & 0x01) DEBUG_SERIAL.print(" [SARJ]");
+        if (en & 0x02) DEBUG_SERIAL.print(" [DESARJ]");
+        if (!en) DEBUG_SERIAL.print(" [DEVRE DISI]");
+        DEBUG_SERIAL.println();
+
+        DEBUG_SERIAL.printf("    Sarj   : %02d:%02d - %02d:%02d  Guc: %luW\n",
+            chStartH, chStartM, chEndH, chEndM, chPower);
+        DEBUG_SERIAL.printf("    Desarj : %02d:%02d - %02d:%02d  Guc: %luW\n",
+            dcStartH, dcStartM, dcEndH, dcEndM, dcPower);
+        DEBUG_SERIAL.printf("    Enable : 0x%04X\n", tcRegs[14]);
+    } else {
+        DEBUG_SERIAL.println("  (Okunamadi)");
+    }
+
+    DEBUG_SERIAL.println("=====================================\n");
+}
+
+// --- Enerji Depolama Modu Degistir ---
+
+void cmdSetEnergyMode(const char* modeStr) {
+    uint16_t mode = parseDec(modeStr);
+    if (mode > 6) {
+        DEBUG_SERIAL.println("[SMODE] Gecersiz mod! (0-6 arasi)");
+        DEBUG_SERIAL.println("  0=Self-generation  1=Time-sharing  2=Timed charge");
+        DEBUG_SERIAL.println("  3=Passive  4=Peak-shaving  5=Off-grid  6=Generator");
+        return;
+    }
+
+    DEBUG_SERIAL.printf("\n[SMODE] Enerji depolama modu -> %d (%s)\n", mode, getEnergyModeName(mode));
+
+    if (inverter.writeRegisters(0x1110, 1, &mode)) {
+        DEBUG_SERIAL.println("[SMODE] Basarili!");
+        // Dogrulama
+        uint16_t readBack;
+        delay(100);
+        if (inverter.readRegister(0x1110, readBack)) {
+            DEBUG_SERIAL.printf("[SMODE] Dogrulama: %d (%s)\n", readBack, getEnergyModeName(readBack));
+        }
+    } else {
+        DEBUG_SERIAL.println("[SMODE] Basarisiz!");
+    }
+}
+
+// --- Time-Sharing Kural Ekle ---
+
+void cmdScheduleAdd(const char* input) {
+    // Format: sadd <idx> <mode> <HHMM_start> <HHMM_end> <soc> <power_w> [days_mask]
+    char parts[10][32] = {};
+    int partCount = 0;
+    const char* p = input;
+
+    while (*p && partCount < 10) {
+        while (*p == ' ') p++;
+        if (!*p) break;
+        int i = 0;
+        while (*p && *p != ' ' && i < 31) {
+            parts[partCount][i++] = *p++;
+        }
+        parts[partCount][i] = '\0';
+        partCount++;
+    }
+
+    // parts[0]="sadd" [1]=idx [2]=mode [3]=start [4]=end [5]=soc [6]=power [7]=days(opsiyonel)
+    if (partCount < 7) {
+        DEBUG_SERIAL.println("[SADD] Kullanim: sadd <idx> <mod> <HHMM_bas> <HHMM_bit> <soc%> <watt> [gun_mask]");
+        DEBUG_SERIAL.println("  idx: 0-255 (dusuk=yuksek oncelik)");
+        DEBUG_SERIAL.println("  mod: 0=Sarj 1=Desarj 2=Peak 3=Besleme 4=Spontan 5=SarjBakim 6=DesarjBakim");
+        DEBUG_SERIAL.println("  HHMM: saat+dakika (orn: 0100=01:00, 1830=18:30)");
+        DEBUG_SERIAL.println("  soc: 10-100 (%)");
+        DEBUG_SERIAL.println("  watt: hedef guc (W)");
+        DEBUG_SERIAL.println("  gun_mask: 7F=tumhafta, 1F=hafta ici, 60=haftasonu (hex, varsayilan: 7F)");
+        return;
+    }
+
+    uint16_t idx = parseDec(parts[1]);
+    uint16_t ctrlMode = parseDec(parts[2]);
+    uint16_t startTime = parseHex(parts[3]);
+    uint16_t endTime = parseHex(parts[4]);
+    uint16_t soc = parseDec(parts[5]);
+    uint32_t power = (uint32_t)atoi(parts[6]);
+    uint16_t days = (partCount >= 8) ? parseHex(parts[7]) : 0x007F;
+
+    // Validasyonlar
+    if (ctrlMode > 6) { DEBUG_SERIAL.println("[SADD] Mod 0-6 arasi olmali!"); return; }
+    if (soc < 10 || soc > 100) { DEBUG_SERIAL.println("[SADD] SOC 10-100 arasi olmali!"); return; }
+    if ((startTime >> 8) > 23 || (startTime & 0xFF) > 59) { DEBUG_SERIAL.println("[SADD] Baslangic saati gecersiz!"); return; }
+    if ((endTime >> 8) > 23 || (endTime & 0xFF) > 59) { DEBUG_SERIAL.println("[SADD] Bitis saati gecersiz!"); return; }
+
+    // 16 register: 0x1120-0x112F
+    uint16_t regs[16] = {};
+    regs[0] = idx;                      // 0x1120: Kural index
+    regs[1] = 0x0001;                   // 0x1121: Enable
+    regs[2] = startTime;                // 0x1122: Baslangic saati
+    regs[3] = endTime;                  // 0x1123: Bitis saati
+    regs[4] = soc;                      // 0x1124: Hedef SOC
+    regs[5] = (uint16_t)(power >> 16);  // 0x1125: Guc high
+    regs[6] = (uint16_t)(power & 0xFFFF); // 0x1126: Guc low
+    regs[7] = 0x0101;                   // 0x1127: Gecerlilik bas (1 Ocak)
+    regs[8] = 0x0C1F;                   // 0x1128: Gecerlilik bit (31 Aralik)
+    regs[9] = days;                     // 0x1129: Gunler
+    regs[10] = ctrlMode;                // 0x112A: Kontrol modu
+    regs[11] = (ctrlMode == 0) ? 0x0001 : 0x0000; // 0x112B: Ek cfg (sarj modunda grid sarj izni)
+    regs[12] = 0x0000;                  // 0x112C: SOC2
+    regs[13] = 0x0000;                  // 0x112D: reserved
+    regs[14] = 0x0000;                  // 0x112E: reserved
+    regs[15] = 0x0001;                  // 0x112F: Write enable
+
+    DEBUG_SERIAL.printf("\n[SADD] Time-Sharing Kural %d yaziliyor...\n", idx);
+    DEBUG_SERIAL.printf("  Mod   : %d (%s)\n", ctrlMode, getTimeSharingModeName(ctrlMode));
+    DEBUG_SERIAL.printf("  Zaman : %02d:%02d - %02d:%02d\n",
+        startTime >> 8, startTime & 0xFF, endTime >> 8, endTime & 0xFF);
+    DEBUG_SERIAL.printf("  SOC   : %%%d  Guc: %luW\n", soc, power);
+    DEBUG_SERIAL.printf("  Gunler: 0x%04X\n", days);
+
+    if (inverter.writeRegisters(0x1120, 16, regs)) {
+        DEBUG_SERIAL.println("[SADD] Yazma basarili!");
+
+        // Enable register dogrula
+        delay(200);
+        uint16_t enResult;
+        if (inverter.readRegister(0x112F, enResult)) {
+            DEBUG_SERIAL.printf("[SADD] Enable sonucu: 0x%04X %s\n", enResult,
+                enResult == 0x0000 ? "(BASARILI)" :
+                enResult == 0x0001 ? "(ISLENIYOR...)" : "(HATA!)");
+        }
+    } else {
+        DEBUG_SERIAL.println("[SADD] Yazma basarisiz!");
+    }
+}
+
+// --- Time-Sharing Kural Sil ---
+
+void cmdScheduleDelete(const char* idxStr) {
+    uint16_t idx = parseDec(idxStr);
+
+    // Kurali devre disi birak (enable=0)
+    uint16_t regs[16] = {};
+    regs[0] = idx;          // Kural index
+    regs[1] = 0x0000;       // Enable = DEVRE DISI
+    regs[2] = 0x0000;       // Baslangic
+    regs[3] = 0x0000;       // Bitis
+    regs[4] = 0x0064;       // SOC 100%
+    regs[5] = 0x0000;       // Guc high
+    regs[6] = 0x0000;       // Guc low
+    regs[7] = 0x0101;       // Tarih bas
+    regs[8] = 0x0C1F;       // Tarih bit
+    regs[9] = 0x0000;       // Gunler = hicbiri
+    regs[10] = 0x0000;      // Mod
+    regs[11] = 0x0000;      // Ek cfg
+    regs[12] = 0x0000;      // SOC2
+    regs[13] = 0x0000;
+    regs[14] = 0x0000;
+    regs[15] = 0x0001;      // Write enable
+
+    DEBUG_SERIAL.printf("\n[SDEL] Time-Sharing Kural %d devre disi birakiliyor...\n", idx);
+
+    if (inverter.writeRegisters(0x1120, 16, regs)) {
+        DEBUG_SERIAL.println("[SDEL] Basarili! Kural devre disi birakildi.");
+        delay(200);
+        uint16_t enResult;
+        if (inverter.readRegister(0x112F, enResult)) {
+            DEBUG_SERIAL.printf("[SDEL] Enable sonucu: 0x%04X %s\n", enResult,
+                enResult == 0x0000 ? "(BASARILI)" : "(HATA!)");
+        }
+    } else {
+        DEBUG_SERIAL.println("[SDEL] Basarisiz!");
+    }
+}
+
+// --- Zamanli Sarj Kural Ekle ---
+
+void cmdTimedChargeAdd(const char* input) {
+    // Format: tadd <idx> <ch_start> <ch_end> <dc_start> <dc_end> <ch_power> <dc_power>
+    char parts[10][32] = {};
+    int partCount = 0;
+    const char* p = input;
+
+    while (*p && partCount < 10) {
+        while (*p == ' ') p++;
+        if (!*p) break;
+        int i = 0;
+        while (*p && *p != ' ' && i < 31) {
+            parts[partCount][i++] = *p++;
+        }
+        parts[partCount][i] = '\0';
+        partCount++;
+    }
+
+    // parts[0]="tadd" [1]=idx [2]=chStart [3]=chEnd [4]=dcStart [5]=dcEnd [6]=chPower [7]=dcPower
+    if (partCount < 8) {
+        DEBUG_SERIAL.println("[TADD] Kullanim: tadd <idx> <sarjBas> <sarjBit> <desarjBas> <desarjBit> <sarjW> <desarjW>");
+        DEBUG_SERIAL.println("  idx: 0-3");
+        DEBUG_SERIAL.println("  HHMM: saat (orn: 0100=01:00, 2200=22:00)");
+        DEBUG_SERIAL.println("  sarjW/desarjW: guc (Watt)");
+        return;
+    }
+
+    uint16_t idx = parseDec(parts[1]);
+    uint16_t chStart = parseHex(parts[2]);
+    uint16_t chEnd = parseHex(parts[3]);
+    uint16_t dcStart = parseHex(parts[4]);
+    uint16_t dcEnd = parseHex(parts[5]);
+    uint32_t chPower = (uint32_t)atoi(parts[6]);
+    uint32_t dcPower = (uint32_t)atoi(parts[7]);
+
+    if (idx > 3) { DEBUG_SERIAL.println("[TADD] Index 0-3 arasi olmali!"); return; }
+
+    // Mevcut modu oku — aktif schedule modundayken blok kilitli
+    uint16_t currentMode = 0;
+    bool modeSwitch = false;
+    if (inverter.readRegister(0x1110, currentMode) && currentMode != 0) {
+        DEBUG_SERIAL.printf("[TADD] Mod %d aktif, yazma icin mode 0'a geciliyor...\n", currentMode);
+        uint16_t modeZero = 0;
+        if (!inverter.writeRegisters(0x1110, 1, &modeZero)) {
+            DEBUG_SERIAL.println("[TADD] Mod degisimi basarisiz! Yazma iptal.");
+            return;
+        }
+        delay(100);
+        modeSwitch = true;
+    }
+
+    // 15 register: 0x1111-0x111F
+    uint16_t regs[15] = {};
+    regs[0] = idx;                          // 0x1111: Kural index
+    regs[1] = 0x0003;                       // 0x1112: Enable (Bit0=sarj + Bit1=desarj)
+    regs[2] = chStart;                      // 0x1113: Sarj baslangic
+    regs[3] = chEnd;                        // 0x1114: Sarj bitis
+    regs[4] = dcStart;                      // 0x1115: Desarj baslangic
+    regs[5] = dcEnd;                        // 0x1116: Desarj bitis
+    regs[6] = (uint16_t)(chPower >> 16);    // 0x1117: Sarj guc high
+    regs[7] = (uint16_t)(chPower & 0xFFFF); // 0x1118: Sarj guc low
+    regs[8] = (uint16_t)(dcPower >> 16);    // 0x1119: Desarj guc high
+    regs[9] = (uint16_t)(dcPower & 0xFFFF); // 0x111A: Desarj guc low
+    regs[10] = 0x0000;                      // 0x111B: reserved
+    regs[11] = 0x0000;                      // 0x111C: reserved
+    regs[12] = 0x0000;                      // 0x111D: reserved
+    regs[13] = 0x0000;                      // 0x111E: reserved
+    regs[14] = 0x0001;                      // 0x111F: Write enable
+
+    DEBUG_SERIAL.printf("\n[TADD] Zamanli Sarj/Desarj Kural %d yaziliyor...\n", idx);
+    DEBUG_SERIAL.printf("  Sarj   : %02d:%02d - %02d:%02d  Guc: %luW\n",
+        chStart >> 8, chStart & 0xFF, chEnd >> 8, chEnd & 0xFF, chPower);
+    DEBUG_SERIAL.printf("  Desarj : %02d:%02d - %02d:%02d  Guc: %luW\n",
+        dcStart >> 8, dcStart & 0xFF, dcEnd >> 8, dcEnd & 0xFF, dcPower);
+
+    if (inverter.writeRegisters(0x1111, 15, regs)) {
+        DEBUG_SERIAL.println("[TADD] Yazma basarili!");
+        delay(200);
+        uint16_t enResult;
+        if (inverter.readRegister(0x111F, enResult)) {
+            DEBUG_SERIAL.printf("[TADD] Enable sonucu: 0x%04X %s\n", enResult,
+                enResult == 0x0000 ? "(BASARILI)" : "(HATA!)");
+        }
+    } else {
+        DEBUG_SERIAL.println("[TADD] Yazma basarisiz!");
+    }
+
+    // Modu geri yukle
+    if (modeSwitch) {
+        delay(100);
+        uint16_t targetMode = 2; // Timed charge modu
+        if (inverter.writeRegisters(0x1110, 1, &targetMode)) {
+            DEBUG_SERIAL.printf("[TADD] Mod %d'ye geri donuldu.\n", targetMode);
+        } else {
+            DEBUG_SERIAL.printf("[TADD] UYARI: Mod geri yuklenemedi! Mevcut mod: 0\n");
+        }
+    }
+}
+
+// --- Zamanli Sarj Kural Sil ---
+
+void cmdTimedChargeDelete(const char* idxStr) {
+    uint16_t idx = parseDec(idxStr);
+    if (idx > 3) { DEBUG_SERIAL.println("[TDEL] Index 0-3 arasi olmali!"); return; }
+
+    uint16_t regs[15] = {};
+    regs[0] = idx;
+    regs[1] = 0x0000;   // Devre disi
+    regs[14] = 0x0001;  // Write enable
+
+    DEBUG_SERIAL.printf("\n[TDEL] Zamanli Sarj Kural %d devre disi birakiliyor...\n", idx);
+
+    if (inverter.writeRegisters(0x1111, 15, regs)) {
+        DEBUG_SERIAL.println("[TDEL] Basarili!");
+        delay(200);
+        uint16_t enResult;
+        if (inverter.readRegister(0x111F, enResult)) {
+            DEBUG_SERIAL.printf("[TDEL] Enable sonucu: 0x%04X %s\n", enResult,
+                enResult == 0x0000 ? "(BASARILI)" : "(HATA!)");
+        }
+    } else {
+        DEBUG_SERIAL.println("[TDEL] Basarisiz!");
+    }
+}
+
 // --- Komut Isleyici ---
 
 void processCommand(const char* cmd) {
@@ -261,6 +683,24 @@ void processCommand(const char* cmd) {
     }
     else if (strcmp(parts[0], "writem") == 0) {
         cmdWriteMultipleRegisters(cmd);
+    }
+    else if (strcmp(parts[0], "slist") == 0) {
+        cmdScheduleList();
+    }
+    else if (strcmp(parts[0], "smode") == 0 && partCount >= 2) {
+        cmdSetEnergyMode(parts[1]);
+    }
+    else if (strcmp(parts[0], "sadd") == 0) {
+        cmdScheduleAdd(cmd);
+    }
+    else if (strcmp(parts[0], "sdel") == 0 && partCount >= 2) {
+        cmdScheduleDelete(parts[1]);
+    }
+    else if (strcmp(parts[0], "tadd") == 0) {
+        cmdTimedChargeAdd(cmd);
+    }
+    else if (strcmp(parts[0], "tdel") == 0 && partCount >= 2) {
+        cmdTimedChargeDelete(parts[1]);
     }
     else if (strcmp(parts[0], "scan") == 0) {
         scanSlaveIds();
