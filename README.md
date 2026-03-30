@@ -8,6 +8,9 @@ Sofar (SOFARSOLAR) güneş enerjisi invertörleri ile **Modbus RTU** protokolü 
 - **Gerçek Zamanlı Veri Okuma** — Sistem durumu, şebeke çıkışı (3 faz R/S/T), PV giriş (4 kanal), batarya bilgileri, enerji istatistikleri
 - **Register Yazma** — Shadow + Enable blok pattern desteği ile invertör parametre konfigürasyonu
 - **Interaktif Seri Konsol** — Komut tabanlı arayüz: okuma, yazma, tarama, otomatik polling
+- **Register Tarama Motoru** — Tam register taraması (fullscan), aralık tarama (scanrange), yazılabilirlik testi (scanwrite) ile akıllı blok tarama
+- **Schedule Yönetimi** — Time-sharing ve zamanli şarj/deşarj kuralları ekleme, silme, listeleme
+- **Enerji Depolama Modları** — 7 farklı mod desteği (Self-generation, Time-sharing, Timed charge, Passive, Peak-shaving, Off-grid, Generator)
 - **Retry Mekanizması** — Otomatik yeniden deneme, hata yönetimi, Modbus exception raporlama
 - **CRC-16 Doğrulama** — Gönderilen ve alınan tüm frame'lerde CRC kontrolü
 
@@ -77,6 +80,17 @@ ESP32'ye bağlandıktan sonra seri konsol üzerinden komutlar girebilirsiniz:
   scan         - Slave ID tara (1-247)
   auto         - Otomatik okuma ac/kapat
   slave N      - Slave ID degistir (orn: slave 1)
+  --- REGISTER TARAMA ---
+  fullscan         - Tam register taramasi (0x0000-0x1FFF)
+  scanrange XXXX YYYY - Belirli aralik tara (hex)
+  scanwrite XXXX YYYY - Yazilabilirlik testi (hex aralik)
+  --- SCHEDULE KOMUTLARI ---
+  slist        - Tum schedule kurallarini goster
+  smode N      - Enerji depolama modu (0-6)
+  sadd I M HHMM HHMM SOC WATT - Time-sharing kural ekle
+  sdel I       - Time-sharing kurali devre disi birak
+  tadd I HHMM HHMM HHMM HHMM CW DW - Zamanli sarj kural ekle
+  tdel I       - Zamanli sarj kurali devre disi birak
   help         - Bu menuyu goster
 =======================================================
 ```
@@ -99,9 +113,6 @@ readn 0484 10
 # İnvertör tarih/saat ayarla (2026-03-10 15:30:00)
 writem 1004 001A 0003 000A 000F 001E 0000 0001
 
-# Enerji depolama modunu değiştir (2 = Zamanli sarj/desarj)
-writem 1110 0002
-
 # Slave ID taraması yap (1-247)
 scan
 
@@ -109,22 +120,64 @@ scan
 auto
 ```
 
+### Register Tarama
+
+```bash
+# Tüm register alanını tara (0x0000-0x1FFF) — akıllı blok tarama
+fullscan
+
+# Belirli aralığı tara (hex)
+scanrange 0400 06FF
+
+# Yazılabilirlik testi — her register'ın mevcut değerini yazıp doğrular
+scanwrite 1100 1150
+
+# Tarama sırasında iptal etmek için: q, Q veya ESC tuşu
+```
+
+### Schedule Yönetimi
+
+```bash
+# Tüm schedule kurallarını listele (Time-sharing + Timed Charge)
+slist
+
+# Enerji depolama modunu değiştir
+smode 1    # 0=Self-gen 1=Time-sharing 2=Timed 3=Passive 4=Peak 5=Off-grid 6=Generator
+
+# Time-sharing kural ekle (index=0, mod=1/Deşarj, 18:00-23:00, SOC %20, 5000W)
+sadd 0 1 1800 2300 20 5000
+
+# Time-sharing kuralı devre dışı bırak
+sdel 0
+
+# Zamanlı şarj/deşarj kural ekle (index=0, şarj 01:00-07:00, deşarj 18:00-23:00, 3000W/5000W)
+tadd 0 0100 0700 1800 2300 3000 5000
+
+# Zamanlı şarj kuralını devre dışı bırak
+tdel 0
+```
+
 ## Proje Yapısı
 
 ```
 sofar-esp32/
 ├── include/
-│   ├── config.h              # Pin tanımları, Modbus ayarları, zamanlama
-│   ├── modbus_rtu.h          # Modbus RTU protokol sınıfı (header)
-│   ├── sofar_inverter.h      # İnvertör veri yapıları ve okuma sınıfı (header)
-│   └── sofar_registers.h     # Sofar Modbus register haritası (V1.39)
+│   ├── config.h                # Pin tanımları, Modbus ayarları, zamanlama
+│   ├── modbus_rtu.h            # Modbus RTU protokol sınıfı (header)
+│   ├── sofar_inverter.h        # İnvertör veri yapıları ve okuma sınıfı (header)
+│   └── sofar_registers.h       # Sofar Modbus register haritası (V1.39)
 ├── src/
-│   ├── main.cpp              # Ana program: komut işleyici, setup/loop
-│   ├── modbus_rtu.cpp         # Modbus RTU implementasyonu (FC 0x03/0x06/0x10)
-│   └── sofar_inverter.cpp     # İnvertör veri okuma/yazma/yazdırma
+│   ├── main.cpp                # Ana program: komut işleyici, tarama motoru, schedule
+│   ├── modbus_rtu.cpp          # Modbus RTU implementasyonu (FC 0x03/0x06/0x10)
+│   └── sofar_inverter.cpp      # İnvertör veri okuma/yazma/yazdırma
 ├── docs/
-│   └── sofar_writable_registers.md  # Yazılabilir register haritası ve test sonuçları
-├── platformio.ini             # PlatformIO yapılandırması
+│   ├── sofar_writable_registers.md           # Yazılabilir register haritası ve test sonuçları
+│   ├── SP2ES_10kW_Register_Haritasi.md       # SP2ES 10kW register haritası
+│   ├── sofar_device_tanıma_registerları.json # Cihaz tanıma register verileri
+│   ├── Sofar Testler Sonuclar ve Kurallar.xlsx
+│   ├── modbus-tables/          # Sofar Modbus protokol dökümanları (PDF/Excel)
+│   └── scan-results/           # Register tarama sonuçları (fullscan, scanwrite)
+├── platformio.ini              # PlatformIO yapılandırması
 └── .gitignore
 ```
 
@@ -185,6 +238,10 @@ Enable register gerektirmeyen, tek tek yazılabilen register'lar:
 
 - Sofar Modbus-G3 Protocol V1.39 (Mart 2025)
 - Detaylı yazılabilir register haritası ve test sonuçları: [`docs/sofar_writable_registers.md`](docs/sofar_writable_registers.md)
+- SP2ES 10kW register haritası: [`docs/SP2ES_10kW_Register_Haritasi.md`](docs/SP2ES_10kW_Register_Haritasi.md)
+- Cihaz tanıma register verileri: [`docs/sofar_device_tanıma_registerları.json`](docs/sofar_device_tanıma_registerları.json)
+- Modbus protokol dökümanları: [`docs/modbus-tables/`](docs/modbus-tables/)
+- Register tarama sonuçları: [`docs/scan-results/`](docs/scan-results/)
 
 ## Lisans
 
