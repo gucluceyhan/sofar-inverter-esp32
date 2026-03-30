@@ -1,0 +1,394 @@
+ 
+ - ASCII register okuma mantığı: Her register 16-bit = 2 byte = 2 ASCII karakter. High byte 1. karakter, low byte 2. karakter. Örneğin 0x5353 → 'S'  
+  (0x53) + 'S' (0x53) = "SS".                                                
+  - Seri numarası 3 bloğa dağılmış: İlk 16 karakter 1093-1100 adreslerinde, son 4 karakter 1136-1137 adreslerinde. Arası reserve (1133-1135). Bu yüzden     
+  blocks dizisinde 3 ayrı blok tanımladım — Modbus bloklar arası okumayı desteklemiyor.                                                          
+  - readOnce: true ve priority: 10: Bu register'lar sabit bilgiler (seri no, firmware versiyonu). Her polling döngüsünde okunması gereksiz — cihaz ilk 
+  bağlandığında bir kez okunup kaydedilmeli. priority: 10 en düşük öncelik.
+
+{
+  "groupId": "device_identification",
+  "name": "Cihaz Tanimlama Bilgileri",
+  "description": "Seri numarasi, donanim versiyonu, yazilim versiyonlari, boot versiyonlari, guvenlik sertifika bilgileri",
+  "defaultIntervalMs": 86400000,
+  "priority": 10,
+  "targetTable": "device_info",
+  "readOnce": true,
+  "blocks": [
+    { "startAddress": 1093, "count": 27, "functionCode": 3, "note": "SN1 + HW ver + Comm SW + Master SW + Slave SW + Safety lib (0x0445-0x045F)" },
+    { "startAddress": 1120, "count": 13, "functionCode": 3, "note": "Safety cert SW/HW + AFCI + Safety pkg (0x0460-0x046C)" },
+    { "startAddress": 1136, "count": 2, "functionCode": 3, "note": "SN2 - Seri numarasi 17-20. karakterler (0x0470-0x0471)" }
+  ],
+  "registers": [
+    {
+      "address": 1093,
+      "field": "serial_number_1_1",
+      "name": "Seri Numarasi (1-2. karakter)",
+      "dataType": "ascii",
+      "charCount": 2,
+      "unit": "",
+      "note": "Register high 8-bit = 1. karakter, low 8-bit = 2. karakter. Ornek: 0x5353 = 'SS'"
+    },
+    {
+      "address": 1094,
+      "field": "serial_number_1_2",
+      "name": "Seri Numarasi (3-4. karakter)",
+      "dataType": "ascii",
+      "charCount": 2,
+      "unit": ""
+    },
+    {
+      "address": 1095,
+      "field": "serial_number_1_3",
+      "name": "Seri Numarasi (5-6. karakter)",
+      "dataType": "ascii",
+      "charCount": 2,
+      "unit": ""
+    },
+    {
+      "address": 1096,
+      "field": "serial_number_1_4",
+      "name": "Seri Numarasi (7-8. karakter)",
+      "dataType": "ascii",
+      "charCount": 2,
+      "unit": ""
+    },
+    {
+      "address": 1097,
+      "field": "serial_number_1_5",
+      "name": "Seri Numarasi (9-10. karakter)",
+      "dataType": "ascii",
+      "charCount": 2,
+      "unit": ""
+    },
+    {
+      "address": 1098,
+      "field": "serial_number_1_6",
+      "name": "Seri Numarasi (11-12. karakter)",
+      "dataType": "ascii",
+      "charCount": 2,
+      "unit": ""
+    },
+    {
+      "address": 1099,
+      "field": "serial_number_1_7",
+      "name": "Seri Numarasi (13-14. karakter)",
+      "dataType": "ascii",
+      "charCount": 2,
+      "unit": ""
+    },
+    {
+      "address": 1100,
+      "field": "serial_number_1_8",
+      "name": "Seri Numarasi (15-16. karakter)",
+      "dataType": "ascii",
+      "charCount": 2,
+      "unit": ""
+    },
+    {
+      "address": 1101,
+      "field": "hardware_version_1",
+      "name": "Donanim Versiyon (1-2. karakter)",
+      "dataType": "ascii",
+      "charCount": 2,
+      "unit": "",
+      "note": "Ornek: 0x5630 = 'V0', 0x3033 = '03' → V003"
+    },
+    {
+      "address": 1102,
+      "field": "hardware_version_2",
+      "name": "Donanim Versiyon (3-4. karakter)",
+      "dataType": "ascii",
+      "charCount": 2,
+      "unit": ""
+    },
+    {
+      "address": 1103,
+      "field": "comm_chip_sw_version_1",
+      "name": "Iletisim Cipi Yazilim (1-2. karakter)",
+      "dataType": "ascii",
+      "charCount": 2,
+      "unit": "",
+      "note": "Ornek: 0x3047 = '0G', 0x3130 = '10', 0x3030 = '00' → 0G.10.00"
+    },
+    {
+      "address": 1104,
+      "field": "comm_chip_sw_version_2",
+      "name": "Iletisim Cipi Yazilim (3-4. karakter)",
+      "dataType": "ascii",
+      "charCount": 2,
+      "unit": ""
+    },
+    {
+      "address": 1105,
+      "field": "comm_chip_sw_version_3",
+      "name": "Iletisim Cipi Yazilim (5-6. karakter)",
+      "dataType": "ascii",
+      "charCount": 2,
+      "unit": ""
+    },
+    {
+      "address": 1106,
+      "field": "comm_chip_sw_version_4",
+      "name": "Iletisim Cipi Yazilim (7-8. karakter)",
+      "dataType": "ascii",
+      "charCount": 2,
+      "unit": ""
+    },
+    {
+      "address": 1107,
+      "field": "master_ctrl_sw_version_1",
+      "name": "Ana Kontrolcu Yazilim (1-2. karakter)",
+      "dataType": "ascii",
+      "charCount": 2,
+      "unit": "",
+      "note": "Ornek: 0x3056 = '0V', 0x3131 = '11', 0x3030 = '00' → 0V.11.00"
+    },
+    {
+      "address": 1108,
+      "field": "master_ctrl_sw_version_2",
+      "name": "Ana Kontrolcu Yazilim (3-4. karakter)",
+      "dataType": "ascii",
+      "charCount": 2,
+      "unit": ""
+    },
+    {
+      "address": 1109,
+      "field": "master_ctrl_sw_version_3",
+      "name": "Ana Kontrolcu Yazilim (5-6. karakter)",
+      "dataType": "ascii",
+      "charCount": 2,
+      "unit": ""
+    },
+    {
+      "address": 1110,
+      "field": "master_ctrl_sw_version_4",
+      "name": "Ana Kontrolcu Yazilim (7-8. karakter)",
+      "dataType": "ascii",
+      "charCount": 2,
+      "unit": ""
+    },
+    {
+      "address": 1111,
+      "field": "slave_ctrl_sw_version_1",
+      "name": "Yardimci Kontrolcu Yazilim (1-2. karakter)",
+      "dataType": "ascii",
+      "charCount": 2,
+      "unit": "",
+      "note": "Ayni format: master controller ile ayni okuma yontemi"
+    },
+    {
+      "address": 1112,
+      "field": "slave_ctrl_sw_version_2",
+      "name": "Yardimci Kontrolcu Yazilim (3-4. karakter)",
+      "dataType": "ascii",
+      "charCount": 2,
+      "unit": ""
+    },
+    {
+      "address": 1113,
+      "field": "slave_ctrl_sw_version_3",
+      "name": "Yardimci Kontrolcu Yazilim (5-6. karakter)",
+      "dataType": "ascii",
+      "charCount": 2,
+      "unit": ""
+    },
+    {
+      "address": 1114,
+      "field": "slave_ctrl_sw_version_4",
+      "name": "Yardimci Kontrolcu Yazilim (7-8. karakter)",
+      "dataType": "ascii",
+      "charCount": 2,
+      "unit": ""
+    },
+    {
+      "address": 1115,
+      "field": "safety_lib_version_1",
+      "name": "Guvenlik Kutuphanesi Versiyon (master)",
+      "dataType": "ascii",
+      "charCount": 2,
+      "unit": "",
+      "note": "Ornek: 0x3036 = master versiyon 06"
+    },
+    {
+      "address": 1116,
+      "field": "safety_lib_version_2",
+      "name": "Guvenlik Kutuphanesi Versiyon (slave)",
+      "dataType": "ascii",
+      "charCount": 2,
+      "unit": "",
+      "note": "Ornek: 0x3038 = slave versiyon 08"
+    },
+    {
+      "address": 1117,
+      "field": "arm_boot_version",
+      "name": "ARM BOOT Versiyonu",
+      "dataType": "uint16",
+      "scale": 1,
+      "unit": ""
+    },
+    {
+      "address": 1118,
+      "field": "master_dsp_boot_version",
+      "name": "Master DSP BOOT Versiyonu",
+      "dataType": "uint16",
+      "scale": 1,
+      "unit": ""
+    },
+    {
+      "address": 1119,
+      "field": "slave_dsp_boot_version",
+      "name": "Slave DSP BOOT Versiyonu",
+      "dataType": "uint16",
+      "scale": 1,
+      "unit": ""
+    },
+    {
+      "address": 1120,
+      "field": "safety_cert_sw_version_1",
+      "name": "Guvenlik Sertifikasi Yazilim (1-2. karakter)",
+      "dataType": "ascii",
+      "charCount": 2,
+      "unit": "",
+      "note": "Iletisim cipi yazilim versiyonu aciklamasina bakınız"
+    },
+    {
+      "address": 1121,
+      "field": "safety_cert_sw_version_2",
+      "name": "Guvenlik Sertifikasi Yazilim (3-4. karakter)",
+      "dataType": "ascii",
+      "charCount": 2,
+      "unit": ""
+    },
+    {
+      "address": 1122,
+      "field": "safety_cert_sw_version_3",
+      "name": "Guvenlik Sertifikasi Yazilim (5-6. karakter)",
+      "dataType": "ascii",
+      "charCount": 2,
+      "unit": ""
+    },
+    {
+      "address": 1123,
+      "field": "safety_cert_sw_version_4",
+      "name": "Guvenlik Sertifikasi Yazilim (7-8. karakter)",
+      "dataType": "ascii",
+      "charCount": 2,
+      "unit": ""
+    },
+    {
+      "address": 1124,
+      "field": "safety_cert_hw_version_1",
+      "name": "Guvenlik Sertifikasi Donanim (1-2. karakter)",
+      "dataType": "ascii",
+      "charCount": 2,
+      "unit": "",
+      "note": "High 8-bit ignore, low 8-bit versiyon numarasi"
+    },
+    {
+      "address": 1125,
+      "field": "safety_cert_hw_version_2",
+      "name": "Guvenlik Sertifikasi Donanim (3-4. karakter)",
+      "dataType": "ascii",
+      "charCount": 2,
+      "unit": ""
+    },
+    {
+      "address": 1126,
+      "field": "afci_sw_version",
+      "name": "AFCI Yazilim Versiyonu",
+      "dataType": "ascii",
+      "charCount": 2,
+      "unit": ""
+    },
+    {
+      "address": 1127,
+      "field": "afci_hw_version",
+      "name": "AFCI Donanim Versiyonu",
+      "dataType": "ascii",
+      "charCount": 2,
+      "unit": ""
+    },
+    {
+      "address": 1128,
+      "field": "afci_serial",
+      "name": "AFCI Seri Numarasi",
+      "dataType": "ascii",
+      "charCount": 2,
+      "unit": ""
+    },
+    {
+      "address": 1129,
+      "field": "afci_comm_version",
+      "name": "AFCI Iletisim Versiyonu",
+      "dataType": "ascii",
+      "charCount": 2,
+      "unit": ""
+    },
+    {
+      "address": 1130,
+      "field": "safety_pkg_sw_version",
+      "name": "Guvenlik Paketi Yazilim Versiyonu (iletisim)",
+      "dataType": "ascii",
+      "charCount": 2,
+      "unit": ""
+    },
+    {
+      "address": 1131,
+      "field": "safety_pkg_version_2",
+      "name": "Guvenlik Paketi Versiyon 2",
+      "dataType": "ascii",
+      "charCount": 2,
+      "unit": ""
+    },
+    {
+      "address": 1132,
+      "field": "safety_pkg_version_3",
+      "name": "Guvenlik Paketi Versiyon 3",
+      "dataType": "ascii",
+      "charCount": 2,
+      "unit": ""
+    },
+    {
+      "address": 1136,
+      "field": "serial_number_2_1",
+      "name": "Seri Numarasi (17-18. karakter)",
+      "dataType": "ascii",
+      "charCount": 2,
+      "unit": "",
+      "note": "Seri numarasinin devami — 0x0445-0x044C ile birlestirilir"
+    },
+    {
+      "address": 1137,
+      "field": "serial_number_2_2",
+      "name": "Seri Numarasi (19-20. karakter)",
+      "dataType": "ascii",
+      "charCount": 2,
+      "unit": ""
+    }
+  ],
+
+  "_reference": {
+    "hexToDecimalMapping": {
+      "0x0445": 1093, "0x0446": 1094, "0x0447": 1095, "0x0448": 1096,
+      "0x0449": 1097, "0x044A": 1098, "0x044B": 1099, "0x044C": 1100,
+      "0x044D": 1101, "0x044E": 1102,
+      "0x044F": 1103, "0x0450": 1104, "0x0451": 1105, "0x0452": 1106,
+      "0x0453": 1107, "0x0454": 1108, "0x0455": 1109, "0x0456": 1110,
+      "0x0457": 1111, "0x0458": 1112, "0x0459": 1113, "0x045A": 1114,
+      "0x045B": 1115, "0x045C": 1116,
+      "0x045D": 1117, "0x045E": 1118, "0x045F": 1119,
+      "0x0460": 1120, "0x0461": 1121, "0x0462": 1122, "0x0463": 1123,
+      "0x0464": 1124, "0x0465": 1125,
+      "0x0466": 1126, "0x0467": 1127, "0x0468": 1128, "0x0469": 1129,
+      "0x046A": 1130, "0x046B": 1131, "0x046C": 1132,
+      "0x0470": 1136, "0x0471": 1137
+    },
+    "serialNumberAssembly": "SN = registers[1093..1100] + registers[1136..1137] → 20 ASCII karakter birlestir",
+    "hardwareVersionAssembly": "HW = registers[1101..1102] → Ornek: 'V0'+'03' = V003",
+    "commSwVersionAssembly": "CommSW = registers[1103..1106] → Ornek: '0G'+'10'+'00'+'' = 0G.10.00",
+    "masterSwVersionAssembly": "MasterSW = registers[1107..1110]",
+    "slaveSwVersionAssembly": "SlaveSW = registers[1111..1114]",
+    "source": "Sofar_Inverter_MODBUS_V1.39_EN.pdf — Bölüm 5.1.2 System Information Parameter Address 2"
+  }
+}

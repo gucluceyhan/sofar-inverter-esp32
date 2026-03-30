@@ -10,6 +10,9 @@ SofarInverter inverter(modbus, MODBUS_SLAVE_ID);
 bool autoPollEnabled = false;
 unsigned long lastPollTime = 0;
 
+// Tarama kontrol
+volatile bool scanAbort = false;
+
 // Serial komut buffer
 char cmdBuffer[256];
 uint8_t cmdIndex = 0;
@@ -31,6 +34,10 @@ void printHelp() {
     DEBUG_SERIAL.println("  scan         - Slave ID tara (1-247)");
     DEBUG_SERIAL.println("  auto         - Otomatik okuma ac/kapat");
     DEBUG_SERIAL.println("  slave N      - Slave ID degistir (orn: slave 1)");
+    DEBUG_SERIAL.println("  --- REGISTER TARAMA ---");
+    DEBUG_SERIAL.println("  fullscan         - Tam register taramasi (0x0000-0x1FFF)");
+    DEBUG_SERIAL.println("  scanrange XXXX YYYY - Belirli aralik tara (hex)");
+    DEBUG_SERIAL.println("  scanwrite XXXX YYYY - Yazilabilirlik testi (hex aralik)");
     DEBUG_SERIAL.println("  --- SCHEDULE KOMUTLARI ---");
     DEBUG_SERIAL.println("  slist        - Tum schedule kurallarini goster");
     DEBUG_SERIAL.println("  smode N      - Enerji depolama modu (0-6)");
@@ -279,7 +286,7 @@ void cmdScheduleList() {
                 DEBUG_SERIAL.printf("  Kural %d: %s\n", idx, en ? "AKTIF" : "DEVRE DISI");
                 DEBUG_SERIAL.printf("    Zaman : %02d:%02d - %02d:%02d\n", startH, startM, endH, endM);
                 DEBUG_SERIAL.printf("    Mod   : %d (%s)\n", ctrlMode, getTimeSharingModeName(ctrlMode));
-                DEBUG_SERIAL.printf("    SOC   : %%%d  Guc: %luW\n", soc, power);
+                DEBUG_SERIAL.printf("    SOC   : %%%d  Guc: %uW\n", soc, power);
                 DEBUG_SERIAL.printf("    Tarih : %02d/%02d - %02d/%02d\n",
                     dateStart >> 8, dateStart & 0xFF, dateEnd >> 8, dateEnd & 0xFF);
 
@@ -328,9 +335,9 @@ void cmdScheduleList() {
         if (!en) DEBUG_SERIAL.print(" [DEVRE DISI]");
         DEBUG_SERIAL.println();
 
-        DEBUG_SERIAL.printf("    Sarj   : %02d:%02d - %02d:%02d  Guc: %luW\n",
+        DEBUG_SERIAL.printf("    Sarj   : %02d:%02d - %02d:%02d  Guc: %uW\n",
             chStartH, chStartM, chEndH, chEndM, chPower);
-        DEBUG_SERIAL.printf("    Desarj : %02d:%02d - %02d:%02d  Guc: %luW\n",
+        DEBUG_SERIAL.printf("    Desarj : %02d:%02d - %02d:%02d  Guc: %uW\n",
             dcStartH, dcStartM, dcEndH, dcEndM, dcPower);
         DEBUG_SERIAL.printf("    Enable : 0x%04X\n", tcRegs[14]);
     } else {
@@ -434,7 +441,7 @@ void cmdScheduleAdd(const char* input) {
     DEBUG_SERIAL.printf("  Mod   : %d (%s)\n", ctrlMode, getTimeSharingModeName(ctrlMode));
     DEBUG_SERIAL.printf("  Zaman : %02d:%02d - %02d:%02d\n",
         startTime >> 8, startTime & 0xFF, endTime >> 8, endTime & 0xFF);
-    DEBUG_SERIAL.printf("  SOC   : %%%d  Guc: %luW\n", soc, power);
+    DEBUG_SERIAL.printf("  SOC   : %%%d  Guc: %uW\n", soc, power);
     DEBUG_SERIAL.printf("  Gunler: 0x%04X\n", days);
 
     if (inverter.writeRegisters(0x1120, 16, regs)) {
@@ -563,9 +570,9 @@ void cmdTimedChargeAdd(const char* input) {
     regs[14] = 0x0001;                      // 0x111F: Write enable
 
     DEBUG_SERIAL.printf("\n[TADD] Zamanli Sarj/Desarj Kural %d yaziliyor...\n", idx);
-    DEBUG_SERIAL.printf("  Sarj   : %02d:%02d - %02d:%02d  Guc: %luW\n",
+    DEBUG_SERIAL.printf("  Sarj   : %02d:%02d - %02d:%02d  Guc: %uW\n",
         chStart >> 8, chStart & 0xFF, chEnd >> 8, chEnd & 0xFF, chPower);
-    DEBUG_SERIAL.printf("  Desarj : %02d:%02d - %02d:%02d  Guc: %luW\n",
+    DEBUG_SERIAL.printf("  Desarj : %02d:%02d - %02d:%02d  Guc: %uW\n",
         dcStart >> 8, dcStart & 0xFF, dcEnd >> 8, dcEnd & 0xFF, dcPower);
 
     if (inverter.writeRegisters(0x1111, 15, regs)) {
@@ -616,6 +623,202 @@ void cmdTimedChargeDelete(const char* idxStr) {
     } else {
         DEBUG_SERIAL.println("[TDEL] Basarisiz!");
     }
+}
+
+// ============================================================
+// REGISTER TARAMA MOTORU
+// ============================================================
+
+// Tarama sirasinda serial input'u kontrol et (abort icin)
+bool checkScanAbort() {
+    while (DEBUG_SERIAL.available()) {
+        char c = DEBUG_SERIAL.read();
+        if (c == 'q' || c == 'Q' || c == 27) {  // q, Q veya ESC
+            scanAbort = true;
+            DEBUG_SERIAL.println("\n[SCAN] IPTAL EDILDI! (kullanici durdurdu)");
+            return true;
+        }
+    }
+    return false;
+}
+
+// Akilli blok tarama: 10'arli bloklar, basarisiz bloklarda tekli tarama
+void cmdFullScan(uint16_t startAddr, uint16_t endAddr) {
+    const uint16_t BLOCK_SIZE = 10;
+    uint32_t totalReadable = 0;
+    uint32_t totalException = 0;
+    uint32_t totalTimeout = 0;
+    uint32_t totalOther = 0;
+    uint32_t scanStart = millis();
+
+    scanAbort = false;
+
+    uint16_t totalRegs = endAddr - startAddr + 1;
+
+    DEBUG_SERIAL.println("\n##############################################");
+    DEBUG_SERIAL.println("#    SOFAR REGISTER TARAMA BASLIYOR          #");
+    DEBUG_SERIAL.println("##############################################");
+    DEBUG_SERIAL.printf("Aralik : 0x%04X - 0x%04X (%d register)\n", startAddr, endAddr, totalRegs);
+    DEBUG_SERIAL.printf("Blok   : %d register/blok\n", BLOCK_SIZE);
+    DEBUG_SERIAL.printf("Slave  : %d\n", inverter.getSlaveId());
+    DEBUG_SERIAL.println("Durdurmak icin 'q' basin.");
+    DEBUG_SERIAL.println("----------------------------------------------");
+    DEBUG_SERIAL.println("CSV FORMAT: addr_hex,value_hex,value_dec,value_signed,status");
+    DEBUG_SERIAL.println("----------------------------------------------");
+
+    uint16_t addr = startAddr;
+
+    while (addr <= endAddr) {
+        if (checkScanAbort()) break;
+
+        uint16_t blockEnd = addr + BLOCK_SIZE - 1;
+        if (blockEnd > endAddr) blockEnd = endAddr;
+        uint16_t count = blockEnd - addr + 1;
+
+        uint16_t buffer[60];
+        ModbusError err = modbus.readHoldingRegisters(
+            inverter.getSlaveId(), addr, count, buffer);
+
+        if (err == MB_OK) {
+            // Blok basarili — tum registerlari yazdir
+            for (uint16_t i = 0; i < count; i++) {
+                DEBUG_SERIAL.printf("0x%04X,0x%04X,%u,%d,OK\n",
+                    addr + i, buffer[i], buffer[i], (int16_t)buffer[i]);
+                totalReadable++;
+            }
+            addr += count;
+        }
+        else if (err == MB_ERR_TIMEOUT) {
+            // Tum blok oldu — hepsini timeout olarak kaydet, atla
+            totalTimeout += count;
+            addr += count;
+        }
+        else if (err == MB_ERR_EXCEPTION) {
+            // Blok exception — tekli tarama yap
+            for (uint16_t i = 0; i < count; i++) {
+                if (checkScanAbort()) break;
+
+                uint16_t singleAddr = addr + i;
+                uint16_t val;
+                ModbusError sErr = modbus.readHoldingRegisters(
+                    inverter.getSlaveId(), singleAddr, 1, &val);
+
+                if (sErr == MB_OK) {
+                    DEBUG_SERIAL.printf("0x%04X,0x%04X,%u,%d,OK\n",
+                        singleAddr, val, val, (int16_t)val);
+                    totalReadable++;
+                }
+                else if (sErr == MB_ERR_TIMEOUT) {
+                    totalTimeout++;
+                }
+                else if (sErr == MB_ERR_EXCEPTION) {
+                    uint8_t ex = modbus.getLastException();
+                    DEBUG_SERIAL.printf("0x%04X,,,, EX_%02X\n", singleAddr, ex);
+                    totalException++;
+                }
+                else {
+                    totalOther++;
+                }
+                delay(30);
+            }
+            addr += count;
+        }
+        else {
+            // Diger hatalar (CRC vb.)
+            totalOther += count;
+            addr += count;
+        }
+
+        // Ilerleme goster (her 256 registerde bir)
+        if ((addr - startAddr) % 256 < BLOCK_SIZE && addr > startAddr) {
+            uint32_t elapsed = (millis() - scanStart) / 1000;
+            uint16_t done = addr - startAddr;
+            uint16_t pct = (uint32_t)done * 100 / totalRegs;
+            DEBUG_SERIAL.printf("# --- ILERLEME: %d/%d (%%%d) | %ds | OK:%u EX:%u TO:%u ---\n",
+                done, totalRegs, pct, elapsed, totalReadable, totalException, totalTimeout);
+        }
+
+        delay(30);  // Register'lar arasi kisa bekleme
+    }
+
+    // Ozet
+    uint32_t elapsed = (millis() - scanStart) / 1000;
+    DEBUG_SERIAL.println("\n##############################################");
+    DEBUG_SERIAL.println("#          TARAMA TAMAMLANDI                 #");
+    DEBUG_SERIAL.println("##############################################");
+    DEBUG_SERIAL.printf("Aralik    : 0x%04X - 0x%04X\n", startAddr, endAddr);
+    DEBUG_SERIAL.printf("Sure      : %u saniye\n", elapsed);
+    DEBUG_SERIAL.printf("Okunabilir: %u register\n", totalReadable);
+    DEBUG_SERIAL.printf("Exception : %u register\n", totalException);
+    DEBUG_SERIAL.printf("Timeout   : %u register\n", totalTimeout);
+    DEBUG_SERIAL.printf("Diger hata: %u register\n", totalOther);
+    DEBUG_SERIAL.printf("Toplam    : %u register\n",
+        totalReadable + totalException + totalTimeout + totalOther);
+    DEBUG_SERIAL.println("##############################################\n");
+}
+
+// Yazilabilirlik testi: Mevcut degeri oku, ayni degeri geri yaz, sonucu kontrol et
+void cmdScanWrite(uint16_t startAddr, uint16_t endAddr) {
+    uint32_t totalWritable = 0;
+    uint32_t totalReadOnly = 0;
+    uint32_t totalUnreadable = 0;
+    uint32_t scanStart = millis();
+
+    scanAbort = false;
+
+    DEBUG_SERIAL.println("\n##############################################");
+    DEBUG_SERIAL.println("#    YAZILABILIRLIK TESTI BASLIYOR           #");
+    DEBUG_SERIAL.println("##############################################");
+    DEBUG_SERIAL.printf("Aralik : 0x%04X - 0x%04X\n", startAddr, endAddr);
+    DEBUG_SERIAL.println("Yontem : Mevcut degeri oku, ayni degeri geri yaz (GUVENLI)");
+    DEBUG_SERIAL.println("Durdurmak icin 'q' basin.");
+    DEBUG_SERIAL.println("----------------------------------------------");
+    DEBUG_SERIAL.println("CSV: addr_hex,value_hex,write_result");
+    DEBUG_SERIAL.println("----------------------------------------------");
+
+    for (uint16_t addr = startAddr; addr <= endAddr; addr++) {
+        if (checkScanAbort()) break;
+
+        // Once oku
+        uint16_t val;
+        ModbusError rErr = modbus.readHoldingRegisters(
+            inverter.getSlaveId(), addr, 1, &val);
+
+        if (rErr != MB_OK) {
+            totalUnreadable++;
+            delay(30);
+            continue;
+        }
+
+        // Ayni degeri geri yaz (FC 0x10)
+        delay(50);
+        ModbusError wErr = modbus.writeMultipleRegisters(
+            inverter.getSlaveId(), addr, 1, &val);
+
+        if (wErr == MB_OK) {
+            DEBUG_SERIAL.printf("0x%04X,0x%04X,RW\n", addr, val);
+            totalWritable++;
+        } else if (wErr == MB_ERR_EXCEPTION) {
+            uint8_t ex = modbus.getLastException();
+            DEBUG_SERIAL.printf("0x%04X,0x%04X,RO_EX%02X\n", addr, val, ex);
+            totalReadOnly++;
+        } else {
+            DEBUG_SERIAL.printf("0x%04X,0x%04X,ERR\n", addr, val);
+            totalReadOnly++;
+        }
+
+        delay(50);
+    }
+
+    uint32_t elapsed = (millis() - scanStart) / 1000;
+    DEBUG_SERIAL.println("\n##############################################");
+    DEBUG_SERIAL.println("#    YAZILABILIRLIK TESTI TAMAMLANDI         #");
+    DEBUG_SERIAL.println("##############################################");
+    DEBUG_SERIAL.printf("Sure       : %u saniye\n", elapsed);
+    DEBUG_SERIAL.printf("Yazilabilir: %u (RW)\n", totalWritable);
+    DEBUG_SERIAL.printf("Salt okunur: %u (RO)\n", totalReadOnly);
+    DEBUG_SERIAL.printf("Okunamadi  : %u\n", totalUnreadable);
+    DEBUG_SERIAL.println("##############################################\n");
 }
 
 // --- Komut Isleyici ---
@@ -704,6 +907,27 @@ void processCommand(const char* cmd) {
     }
     else if (strcmp(parts[0], "scan") == 0) {
         scanSlaveIds();
+    }
+    else if (strcmp(parts[0], "fullscan") == 0) {
+        cmdFullScan(0x0000, 0x1FFF);
+    }
+    else if (strcmp(parts[0], "scanrange") == 0 && partCount >= 3) {
+        uint16_t sAddr = parseHex(parts[1]);
+        uint16_t eAddr = parseHex(parts[2]);
+        if (eAddr < sAddr) {
+            DEBUG_SERIAL.println("[SCANRANGE] Bitis adresi baslangictan buyuk olmali!");
+        } else {
+            cmdFullScan(sAddr, eAddr);
+        }
+    }
+    else if (strcmp(parts[0], "scanwrite") == 0 && partCount >= 3) {
+        uint16_t sAddr = parseHex(parts[1]);
+        uint16_t eAddr = parseHex(parts[2]);
+        if (eAddr < sAddr) {
+            DEBUG_SERIAL.println("[SCANWRITE] Bitis adresi baslangictan buyuk olmali!");
+        } else {
+            cmdScanWrite(sAddr, eAddr);
+        }
     }
     else if (strcmp(parts[0], "auto") == 0) {
         autoPollEnabled = !autoPollEnabled;
